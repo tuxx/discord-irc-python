@@ -5,6 +5,7 @@ import asyncio
 import logging
 import json
 import hashlib
+import re
 
 # Load configuration from config.json
 with open("config.json", "r") as config_file:
@@ -49,6 +50,8 @@ class IRCRelayBot(irc.bot.SingleServerIRCBot):
         self.connection_channels = list(channel_webhook_map.keys())
         # Add discord user cache
         self.discord_users = {}
+        # Add emoji cache
+        self.discord_emojis = {}
         logging.info("IRC bot initialized for server: %s:%d with nickname: %s", server, port, nickname)
 
     def start(self):
@@ -78,6 +81,11 @@ class IRCRelayBot(irc.bot.SingleServerIRCBot):
         message = event.arguments[0]
         logging.debug("Message received on IRC channel %s: <%s> %s", irc_channel, nickname, message)
 
+        # Handle !emoji command
+        if message.strip().lower() == "!emoji":
+            self.send_emoji_list(connection, nickname)
+            return
+
         if irc_channel in self.channel_webhook_map:
             self.send_to_discord(irc_channel, nickname, message)
 
@@ -89,6 +97,25 @@ class IRCRelayBot(irc.bot.SingleServerIRCBot):
 
         # Translate @mentions in the message
         translated_message = self.translate_mentions(message, webhook_url)
+        
+        # Translate :emoji: to Discord emoji format
+        if not self.discord_emojis:
+            # Fetch emojis from all available guilds
+            for guild in discord_bot.guilds:
+                for emoji in guild.emojis:
+                    self.discord_emojis[emoji.name.lower()] = str(emoji)
+                logging.debug(f"Cached {len(guild.emojis)} emojis from guild {guild.name}")
+
+        # Replace :emoji: with Discord emoji format
+        words = translated_message.split()
+        for i, word in enumerate(words):
+            if word.startswith(':') and word.endswith(':'):
+                emoji_name = word[1:-1].lower()  # Remove colons and convert to lowercase
+                if emoji_name in self.discord_emojis:
+                    words[i] = self.discord_emojis[emoji_name]
+                    logging.debug(f"Translated emoji {emoji_name} to {self.discord_emojis[emoji_name]}")
+
+        translated_message = ' '.join(words)
 
         payload = {
             "username": nickname,
@@ -161,6 +188,36 @@ class IRCRelayBot(irc.bot.SingleServerIRCBot):
     def on_any_event(self, connection, event):
         logging.debug("IRC Event: %s: %s", event.type, event.arguments)
 
+    def send_emoji_list(self, connection, nickname):
+        try:
+            # Refresh emoji cache if empty
+            if not self.discord_emojis:
+                for guild in discord_bot.guilds:
+                    for emoji in guild.emojis:
+                        self.discord_emojis[emoji.name.lower()] = str(emoji)
+
+            # Sort emojis alphabetically
+            sorted_emojis = sorted(self.discord_emojis.keys())
+            
+            # Split into chunks to avoid flooding
+            chunk_size = 20
+            emoji_chunks = [sorted_emojis[i:i + chunk_size] for i in range(0, len(sorted_emojis), chunk_size)]
+
+            # Send header
+            connection.privmsg(nickname, f"Available Discord emojis ({len(sorted_emojis)} total):")
+            
+            # Send emoji list in chunks
+            for chunk in emoji_chunks:
+                emoji_list = ", ".join(f":{emoji}:" for emoji in chunk)
+                connection.privmsg(nickname, emoji_list)
+                
+            connection.privmsg(nickname, "Use these emojis by surrounding them with colons, e.g., :emoji_name:")
+            
+            logging.debug(f"Sent emoji list to {nickname}")
+        except Exception as e:
+            logging.error(f"Error sending emoji list: {e}")
+            connection.privmsg(nickname, "Error retrieving emoji list. Please try again later.")
+
 class DiscordRelayBot(discord.Client):
     def __init__(self, irc_bot, discord_to_irc_map):
         intents = discord.Intents.default()
@@ -214,8 +271,11 @@ class DiscordRelayBot(discord.Client):
             content = content.replace(f'<@{mention.id}>', f'@{mention.display_name}')
             content = content.replace(f'<@!{mention.id}>', f'@{mention.display_name}')
 
+        # Convert Discord emoji format <:name:id> to :name:
+        content = re.sub(r'<(a)?:([a-zA-Z0-9_]+):[0-9]+>', r':\2:', content)
+
         color_code = self.get_user_color(author_name)
-        formatted_message = f"<\x03{color_code}{author_name}\x03> {content}"
+        formatted_message = f"\x03{color_code}{author_name}\x03> {content}"
         log_if_enabled(logging.debug, ENABLE_DISCORD_LOGGING, "Relaying message to IRC channel %s: %s", irc_channel, formatted_message)
         self.irc_bot.connection.privmsg(irc_channel, formatted_message)
 
