@@ -44,5 +44,5 @@ python main.py
 ```
 
 ## TODO
-- [ ] make sure mentions on irc to discord usernames work (@<discord_username>)
+- [x] make sure mentions on irc to discord usernames work (@<discord_username>)
 - [ ] Build docker image with github actions
