@@ -4,6 +4,7 @@ import requests
 import asyncio
 import logging
 import json
+import hashlib
 
 # Load configuration from config.json
 with open("config.json", "r") as config_file:
@@ -120,7 +121,18 @@ class DiscordRelayBot(discord.Client):
 
         self.irc_bot = irc_bot
         self.discord_to_irc_map = discord_to_irc_map
+        # Add a cache for username colors
+        self.username_colors = {}
         log_if_enabled(logging.info, ENABLE_DISCORD_LOGGING, "Initialized Discord bot")
+
+    def get_user_color(self, username):
+        if username not in self.username_colors:
+            # Generate a consistent color number (2-15) based on username
+            hash_value = int(hashlib.md5(username.encode()).hexdigest(), 16)
+            # IRC colors 2-15 (excluding 0,1 which are white/black)
+            color_number = (hash_value % 14) + 2
+            self.username_colors[username] = color_number
+        return self.username_colors[username]
 
     async def on_ready(self):
         log_if_enabled(logging.info, ENABLE_DISCORD_LOGGING, "Discord bot logged in as %s", self.user)
@@ -133,7 +145,9 @@ class DiscordRelayBot(discord.Client):
         irc_channel = self.discord_to_irc_map.get(discord_channel_id)
 
         if irc_channel:
-            formatted_message = f"{message.author.name}: {message.content}"
+            # Add IRC color codes to the username
+            color_code = self.get_user_color(message.author.name)
+            formatted_message = f"<\x03{color_code}{message.author.name}\x03> {message.content}"
             log_if_enabled(logging.debug, ENABLE_DISCORD_LOGGING, "Relaying message to IRC channel %s: %s", irc_channel, formatted_message)
             self.irc_bot.connection.privmsg(irc_channel, formatted_message)
 
