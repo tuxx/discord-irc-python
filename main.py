@@ -275,7 +275,7 @@ class DiscordRelayBot(discord.Client):
         content = re.sub(r'<(a)?:([a-zA-Z0-9_]+):[0-9]+>', r':\2:', content)
 
         color_code = self.get_user_color(author_name)
-        formatted_message = f"\x03{color_code}{author_name}\x03> {content}"
+        formatted_message = f"<\x03{color_code}{author_name}\x03> {content}"
         log_if_enabled(logging.debug, ENABLE_DISCORD_LOGGING, "Relaying message to IRC channel %s: %s", irc_channel, formatted_message)
         self.irc_bot.connection.privmsg(irc_channel, formatted_message)
 
