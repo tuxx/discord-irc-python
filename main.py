@@ -102,30 +102,45 @@ class IRCRelayBot(irc.bot.SingleServerIRCBot):
             logging.error("Failed to send message to Discord: %s", e)
 
     def translate_mentions(self, message, webhook_url):
-        # Extract the guild ID from the webhook URL
         try:
             if not self.discord_users:
-                # Fetch users only once and cache them
-                guild_id = webhook_url.split('/')[5]
-                bot_token = DISCORD_BOT_TOKEN
-                headers = {'Authorization': f'Bot {bot_token}'}
-                response = requests.get(f'https://discord.com/api/v10/guilds/{guild_id}/members?limit=1000', headers=headers)
-                if response.status_code == 200:
-                    members = response.json()
-                    for member in members:
-                        username = member['user']['username'].lower()
-                        user_id = member['user']['id']
-                        self.discord_users[username] = user_id
+                # Get the guild ID from the Discord bot instead of webhook URL
+                for guild in discord_bot.guilds:
+                    bot_token = DISCORD_BOT_TOKEN
+                    headers = {'Authorization': f'Bot {bot_token}'}
+                    response = requests.get(f'https://discord.com/api/v10/guilds/{guild.id}/members?limit=1000', headers=headers)
+                    
+                    logging.debug(f"Discord API Response Status: {response.status_code}")
+                    if response.status_code == 200:
+                        members = response.json()
+                        logging.debug(f"Fetched {len(members)} members from Discord")
+                        
+                        for member in members:
+                            user = member['user']
+                            user_id = user['id']
+                            if 'global_name' in user and user['global_name']:
+                                self.discord_users[user['global_name'].lower()] = user_id
+                                logging.debug(f"Cached global_name: {user['global_name'].lower()} -> {user_id}")
+                            username = user['username'].lower()
+                            self.discord_users[username] = user_id
+                            logging.debug(f"Cached username: {username} -> {user_id}")
 
             # Replace @mentions with Discord user IDs
             words = message.split()
             for i, word in enumerate(words):
                 if word.startswith('@'):
                     username = word[1:].lower()  # Remove @ and convert to lowercase
+                    logging.debug(f"Looking up mention: {username}")
                     if username in self.discord_users:
-                        words[i] = f'<@{self.discord_users[username]}>'
+                        user_id = self.discord_users[username]
+                        words[i] = f'<@{user_id}>'
+                        logging.debug(f"Translated mention {username} to <@{user_id}>")
+                    else:
+                        logging.debug(f"No match found for {username}. Available users: {list(self.discord_users.keys())}")
             
-            return ' '.join(words)
+            translated = ' '.join(words)
+            logging.debug(f"Final translated message: {translated}")
+            return translated
         except Exception as e:
             logging.error(f"Error translating mentions: {e}")
             return message
@@ -179,9 +194,16 @@ class DiscordRelayBot(discord.Client):
         irc_channel = self.discord_to_irc_map.get(discord_channel_id)
 
         if irc_channel:
+            # Convert the message content to replace mentions with usernames
+            content = message.content
+            for mention in message.mentions:
+                # Replace both <@ID> and <@!ID> formats
+                content = content.replace(f'<@{mention.id}>', f'@{mention.display_name}')
+                content = content.replace(f'<@!{mention.id}>', f'@{mention.display_name}')
+
             # Add IRC color codes to the username
             color_code = self.get_user_color(message.author.name)
-            formatted_message = f"<\x03{color_code}{message.author.name}\x03> {message.content}"
+            formatted_message = f"<\x03{color_code}{message.author.name}\x03> {content}"
             log_if_enabled(logging.debug, ENABLE_DISCORD_LOGGING, "Relaying message to IRC channel %s: %s", irc_channel, formatted_message)
             self.irc_bot.connection.privmsg(irc_channel, formatted_message)
 
