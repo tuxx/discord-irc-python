@@ -17,6 +17,7 @@ IRC_TO_DISCORD_WEBHOOKS = config["irc_to_discord_webhooks"]
 DISCORD_TO_IRC_CHANNELS = config["discord_to_irc_channels"]
 
 # Logging flags
+
 ENABLE_DISCORD_LOGGING = config.get("enable_discord_logging", True)
 ENABLE_IRC_LOGGING = config.get("enable_irc_logging", True)
 
@@ -132,7 +133,7 @@ class DiscordRelayBot(discord.Client):
         irc_channel = self.discord_to_irc_map.get(discord_channel_id)
 
         if irc_channel:
-            formatted_message = f"[Discord] {message.author.name}: {message.content}"
+            formatted_message = f"{message.author.name}: {message.content}"
             log_if_enabled(logging.debug, ENABLE_DISCORD_LOGGING, "Relaying message to IRC channel %s: %s", irc_channel, formatted_message)
             self.irc_bot.connection.privmsg(irc_channel, formatted_message)
 
@@ -151,7 +152,8 @@ irc_bot = IRCRelayBot(
 async def run_irc_bot():
     try:
         log_if_enabled(logging.info, ENABLE_IRC_LOGGING, "Starting IRC bot")
-        irc_bot.start()
+        # Run the IRC bot's connection loop in a separate thread
+        await asyncio.to_thread(irc_bot.start)
     except Exception as e:
         log_if_enabled(logging.error, ENABLE_IRC_LOGGING, "IRC bot encountered an error: %s", e)
 
@@ -160,10 +162,21 @@ discord_bot = DiscordRelayBot(irc_bot, DISCORD_TO_IRC_CHANNELS)
 
 # Run both bots
 async def main():
-    await asyncio.gather(
-        asyncio.to_thread(run_irc_bot),
-        discord_bot.start(DISCORD_BOT_TOKEN),
-    )
+    # Create tasks for both bots
+    irc_task = asyncio.create_task(run_irc_bot())
+    discord_task = asyncio.create_task(discord_bot.start(DISCORD_BOT_TOKEN))
+    
+    try:
+        # Wait for both tasks to complete (or fail)
+        await asyncio.gather(irc_task, discord_task)
+    except Exception as e:
+        logging.error(f"Error in main loop: {e}")
+        # Make sure to close both bots
+        if not irc_task.done():
+            irc_task.cancel()
+        if not discord_task.done():
+            discord_task.cancel()
+        raise
 
 # Entry point
 if __name__ == "__main__":
