@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  relay-bot:
+    build: .
+    container_name: discord-irc-relay
+    restart: unless-stopped
+    volumes:
+      - ./config.json:/app/config.json
+      - ./relay_bot.log:/app/relay_bot.log
