@@ -176,10 +176,12 @@ class DiscordRelayBot(discord.Client):
 
     def get_user_color(self, username):
         if username not in self.username_colors:
-            # Generate a consistent color number (2-15) based on username
+            # Generate a consistent color number based on username
             hash_value = int(hashlib.md5(username.encode()).hexdigest(), 16)
-            # IRC colors 2-15 (excluding 0,1 which are white/black)
-            color_number = (hash_value % 14) + 2
+            # IRC colors 2-13,15 (excluding 0,1,14 which are white/black/gray)
+            color_number = (hash_value % 13) + 2
+            if color_number >= 14:  # Skip color 14 (gray) and use 15 instead
+                color_number = 15
             self.username_colors[username] = color_number
         return self.username_colors[username]
 
@@ -187,25 +189,35 @@ class DiscordRelayBot(discord.Client):
         log_if_enabled(logging.info, ENABLE_DISCORD_LOGGING, "Discord bot logged in as %s", self.user)
 
     async def on_message(self, message):
-        if message.author.bot:
-            return
-
         discord_channel_id = str(message.channel.id)
         irc_channel = self.discord_to_irc_map.get(discord_channel_id)
 
-        if irc_channel:
-            # Convert the message content to replace mentions with usernames
-            content = message.content
-            for mention in message.mentions:
-                # Replace both <@ID> and <@!ID> formats
-                content = content.replace(f'<@{mention.id}>', f'@{mention.display_name}')
-                content = content.replace(f'<@!{mention.id}>', f'@{mention.display_name}')
+        if not irc_channel:
+            return
 
-            # Add IRC color codes to the username
-            color_code = self.get_user_color(message.author.name)
-            formatted_message = f"<\x03{color_code}{message.author.name}\x03> {content}"
-            log_if_enabled(logging.debug, ENABLE_DISCORD_LOGGING, "Relaying message to IRC channel %s: %s", irc_channel, formatted_message)
-            self.irc_bot.connection.privmsg(irc_channel, formatted_message)
+        # Skip messages from our own bot
+        if message.author.id == self.user.id:
+            return
+
+        # Skip messages from our own webhooks
+        if message.webhook_id:
+            webhook_url = f"https://discord.com/api/webhooks/{message.webhook_id}"
+            if any(webhook_url in webhook for webhook in self.irc_bot.channel_webhook_map.values()):
+                return
+
+        # Get the effective name - for webhooks, use author name
+        author_name = message.author.display_name
+        
+        # Rest of the message handling...
+        content = message.content
+        for mention in message.mentions:
+            content = content.replace(f'<@{mention.id}>', f'@{mention.display_name}')
+            content = content.replace(f'<@!{mention.id}>', f'@{mention.display_name}')
+
+        color_code = self.get_user_color(author_name)
+        formatted_message = f"<\x03{color_code}{author_name}\x03> {content}"
+        log_if_enabled(logging.debug, ENABLE_DISCORD_LOGGING, "Relaying message to IRC channel %s: %s", irc_channel, formatted_message)
+        self.irc_bot.connection.privmsg(irc_channel, formatted_message)
 
 
 # Initialize the IRC bot with the required parameters
