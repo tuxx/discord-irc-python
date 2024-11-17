@@ -47,6 +47,8 @@ class IRCRelayBot(irc.bot.SingleServerIRCBot):
         self.realname = realname
         self.channel_webhook_map = channel_webhook_map
         self.connection_channels = list(channel_webhook_map.keys())
+        # Add discord user cache
+        self.discord_users = {}
         logging.info("IRC bot initialized for server: %s:%d with nickname: %s", server, port, nickname)
 
     def start(self):
@@ -85,16 +87,48 @@ class IRCRelayBot(irc.bot.SingleServerIRCBot):
             logging.warning("No webhook URL configured for IRC channel: %s", irc_channel)
             return
 
+        # Translate @mentions in the message
+        translated_message = self.translate_mentions(message, webhook_url)
+
         payload = {
             "username": nickname,
-            "content": message,
+            "content": translated_message,
         }
         try:
             response = requests.post(webhook_url, json=payload)
             response.raise_for_status()
-            logging.debug("Message relayed to Discord: <%s> %s", nickname, message)
+            logging.debug("Message relayed to Discord: <%s> %s", nickname, translated_message)
         except requests.RequestException as e:
             logging.error("Failed to send message to Discord: %s", e)
+
+    def translate_mentions(self, message, webhook_url):
+        # Extract the guild ID from the webhook URL
+        try:
+            if not self.discord_users:
+                # Fetch users only once and cache them
+                guild_id = webhook_url.split('/')[5]
+                bot_token = DISCORD_BOT_TOKEN
+                headers = {'Authorization': f'Bot {bot_token}'}
+                response = requests.get(f'https://discord.com/api/v10/guilds/{guild_id}/members?limit=1000', headers=headers)
+                if response.status_code == 200:
+                    members = response.json()
+                    for member in members:
+                        username = member['user']['username'].lower()
+                        user_id = member['user']['id']
+                        self.discord_users[username] = user_id
+
+            # Replace @mentions with Discord user IDs
+            words = message.split()
+            for i, word in enumerate(words):
+                if word.startswith('@'):
+                    username = word[1:].lower()  # Remove @ and convert to lowercase
+                    if username in self.discord_users:
+                        words[i] = f'<@{self.discord_users[username]}>'
+            
+            return ' '.join(words)
+        except Exception as e:
+            logging.error(f"Error translating mentions: {e}")
+            return message
 
     def on_disconnect(self, connection, event):
         logging.warning("Disconnected from IRC server. Reconnecting...")
