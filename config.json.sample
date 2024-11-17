@@ -1,0 +1,17 @@
+{
+    "irc_server": "irc.server.com",
+    "irc_port": 6667,
+    "irc_nickname": "RelayBot",
+    "discord_bot_token": "",
+    "irc_to_discord_webhooks": {
+        "#irc-channel": "https://discord.com/api/webhook/url",
+        "#more-irc-channel": "https://discord.com/api/webhooks/url",
+    },
+    "discord_to_irc_channels": {
+        "discord_channel_id": "#irc-channel",
+        "1234567890123456789": "#more-irc-channel",
+    },
+    "enable_discord_logging": false,
+    "enable_irc_logging": false
+}
+
