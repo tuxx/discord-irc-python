@@ -265,7 +265,7 @@ class DiscordRelayBot(discord.Client):
         # Get the effective name - for webhooks, use author name
         author_name = message.author.display_name
         
-        # Rest of the message handling...
+        # Handle message content
         content = message.content
         for mention in message.mentions:
             content = content.replace(f'<@{mention.id}>', f'@{mention.display_name}')
@@ -273,6 +273,14 @@ class DiscordRelayBot(discord.Client):
 
         # Convert Discord emoji format <:name:id> to :name:
         content = re.sub(r'<(a)?:([a-zA-Z0-9_]+):[0-9]+>', r':\2:', content)
+
+        # Add attachment URLs to the message
+        if message.attachments:
+            attachment_urls = [attachment.url for attachment in message.attachments]
+            if content:
+                content += " " + " ".join(attachment_urls)
+            else:
+                content = " ".join(attachment_urls)
 
         color_code = self.get_user_color(author_name)
         formatted_message = f"<\x03{color_code}{author_name}\x03> {content}"
