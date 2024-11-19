@@ -11,7 +11,13 @@
         "discord_channel_id": "#irc-channel",
         "1234567890123456789": "#more-irc-channel",
     },
+    "ignored_irc_nicknames": ["bot1", "bot2"],
+    "ignored_message_patterns": [
+        "^!command",
+        "\\[ANN\\].*"
+    ],
     "enable_discord_logging": false,
     "enable_irc_logging": false
+
 }
 

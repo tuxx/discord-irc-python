@@ -41,6 +41,10 @@ def log_if_enabled(log_function, is_enabled, message, *args):
     if is_enabled:
         log_function(message, *args)
 
+# Add to the config loading section
+IGNORED_IRC_NICKNAMES = config.get("ignored_irc_nicknames", [])
+IGNORED_MESSAGE_PATTERNS = config.get("ignored_message_patterns", [])
+
 class IRCRelayBot(irc.bot.SingleServerIRCBot):
     def __init__(self, server, port, nickname, username, realname, channel_webhook_map):
         super().__init__([(server, port)], nickname, realname)
@@ -53,6 +57,11 @@ class IRCRelayBot(irc.bot.SingleServerIRCBot):
         # Add emoji cache
         self.discord_emojis = {}
         logging.info("IRC bot initialized for server: %s:%d with nickname: %s", server, port, nickname)
+
+        # Add compiled regex patterns
+        self.ignored_patterns = [re.compile(pattern) for pattern in IGNORED_MESSAGE_PATTERNS]
+        self.ignored_nicknames = set(IGNORED_IRC_NICKNAMES)
+        logging.info(f"Loaded {len(self.ignored_nicknames)} ignored nicknames and {len(self.ignored_patterns)} ignored patterns")
 
     def start(self):
         try:
@@ -75,11 +84,29 @@ class IRCRelayBot(irc.bot.SingleServerIRCBot):
             except Exception as e:
                 logging.error("Failed to join channel %s: %s", channel, e)
 
+    def should_ignore_message(self, nickname, message):
+        # Check if nickname is in ignored list
+        if nickname.lower() in self.ignored_nicknames:
+            logging.debug(f"Ignoring message from ignored nickname: {nickname}")
+            return True
+            
+        # Check if message matches any ignored pattern
+        for pattern in self.ignored_patterns:
+            if pattern.search(message):
+                logging.debug(f"Ignoring message matching pattern {pattern.pattern}: {message}")
+                return True
+                
+        return False
+
     def on_pubmsg(self, connection, event):
         irc_channel = event.target
         nickname = event.source.split('!')[0]
         message = event.arguments[0]
         logging.debug("Message received on IRC channel %s: <%s> %s", irc_channel, nickname, message)
+
+        # Check if message should be ignored
+        if self.should_ignore_message(nickname, message):
+            return
 
         # Handle !emoji command
         if message.strip().lower() == "!emoji":
