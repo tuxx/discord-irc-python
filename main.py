@@ -7,6 +7,7 @@ import json
 import hashlib
 import re
 import aiohttp
+import time
 
 # Load configuration from config.json
 with open("config.json", "r") as config_file:
@@ -197,8 +198,21 @@ class IRCRelayBot(irc.bot.SingleServerIRCBot):
             return message
 
     def on_disconnect(self, connection, event):
-        logging.warning("Disconnected from IRC server. Reconnecting...")
-        self.start()
+        initial_delay = 5  # Start with 5 seconds
+        max_delay = 300    # Maximum delay of 5 minutes (300 seconds)
+        current_delay = initial_delay
+
+        while True:
+            logging.warning(f"Disconnected from IRC server. Attempting to reconnect in {current_delay} seconds...")
+            try:
+                time.sleep(current_delay)
+                self.start()
+                # If connection succeeds, break out of the loop
+                break
+            except Exception as e:
+                logging.error(f"Reconnection attempt failed: {e}")
+                # Double the delay for next attempt, but cap at max_delay
+                current_delay = min(current_delay * 2, max_delay)
 
     def on_error(self, connection, event):
         logging.error("IRC Error: %s", event)
@@ -242,6 +256,16 @@ class IRCRelayBot(irc.bot.SingleServerIRCBot):
             logging.error(f"Error sending emoji list: {e}")
             connection.privmsg(nickname, "Error retrieving emoji list. Please try again later.")
 
+    def on_invite(self, connection, event):
+        channel = event.arguments[0]
+        inviter = event.source.split('!')[0]
+        logging.info(f"Received invite to {channel} from {inviter}")
+        try:
+            connection.join(channel)
+            logging.info(f"Successfully joined {channel} after invite")
+        except Exception as e:
+            logging.error(f"Failed to join {channel} after invite: {e}")
+
 class DiscordRelayBot(discord.Client):
     def __init__(self, irc_bot, discord_to_irc_map):
         intents = discord.Intents.default()
@@ -266,7 +290,7 @@ class DiscordRelayBot(discord.Client):
     async def on_ready(self):
         log_if_enabled(logging.info, ENABLE_DISCORD_LOGGING, "Discord bot logged in as %s", self.user)
 
-    async def upload_to_sourcebin(self, content, language='text'):
+    async def upload_to_sourcebin(self, content):
         try:
             # Clean the content by removing null bytes and normalizing line endings
             content = content.replace('\x00', '').replace('\r\n', '\n').replace('\r', '\n')
@@ -275,7 +299,7 @@ class DiscordRelayBot(discord.Client):
                 "files": [{
                     "name": "code.txt",
                     "content": content,
-                    "languageId": 294  # Always use plain text because idgaf (294) 
+                    "languageId": 294  # Always use plain text because idgaf (294)
                 }]
             }
             
@@ -316,6 +340,7 @@ class DiscordRelayBot(discord.Client):
             if any(webhook_url in webhook for webhook in self.irc_bot.channel_webhook_map.values()):
                 return
 
+        # Get the effective name
         author_name = message.author.display_name
         content = message.content
 
@@ -326,11 +351,10 @@ class DiscordRelayBot(discord.Client):
         if '```' in content:
             codeblock_pattern = r'```(?:(\w+)\n)?([\s\S]*?)```'
             for match in re.finditer(codeblock_pattern, content):
-                language = match.group(1) or 'text'
                 code = match.group(2).strip()
                 
                 # Upload to sourceb.in
-                paste_url = await self.upload_to_sourcebin(code, language)
+                paste_url = await self.upload_to_sourcebin(code)
                 if paste_url:
                     # Replace the codeblock with the URL
                     content = content.replace(match.group(0), f'[Code: {paste_url}]')
