@@ -6,6 +6,7 @@ import logging
 import json
 import hashlib
 import re
+import aiohttp
 
 # Load configuration from config.json
 with open("config.json", "r") as config_file:
@@ -41,7 +42,6 @@ def log_if_enabled(log_function, is_enabled, message, *args):
     if is_enabled:
         log_function(message, *args)
 
-# Add to the config loading section
 IGNORED_IRC_NICKNAMES = config.get("ignored_irc_nicknames", [])
 IGNORED_MESSAGE_PATTERNS = config.get("ignored_message_patterns", [])
 
@@ -52,13 +52,10 @@ class IRCRelayBot(irc.bot.SingleServerIRCBot):
         self.realname = realname
         self.channel_webhook_map = channel_webhook_map
         self.connection_channels = list(channel_webhook_map.keys())
-        # Add discord user cache
         self.discord_users = {}
-        # Add emoji cache
         self.discord_emojis = {}
         logging.info("IRC bot initialized for server: %s:%d with nickname: %s", server, port, nickname)
 
-        # Add compiled regex patterns
         self.ignored_patterns = [re.compile(pattern) for pattern in IGNORED_MESSAGE_PATTERNS]
         self.ignored_nicknames = set(IGNORED_IRC_NICKNAMES)
         logging.info(f"Loaded {len(self.ignored_nicknames)} ignored nicknames and {len(self.ignored_patterns)} ignored patterns")
@@ -254,7 +251,6 @@ class DiscordRelayBot(discord.Client):
 
         self.irc_bot = irc_bot
         self.discord_to_irc_map = discord_to_irc_map
-        # Add a cache for username colors
         self.username_colors = {}
         log_if_enabled(logging.info, ENABLE_DISCORD_LOGGING, "Initialized Discord bot")
 
@@ -262,15 +258,46 @@ class DiscordRelayBot(discord.Client):
         if username not in self.username_colors:
             # Generate a consistent color number based on username
             hash_value = int(hashlib.md5(username.encode()).hexdigest(), 16)
-            # IRC colors 2-13,15 (excluding 0,1,14 which are white/black/gray)
-            color_number = (hash_value % 13) + 2
-            if color_number >= 14:  # Skip color 14 (gray) and use 15 instead
-                color_number = 15
+            # IRC colors 2-13 (excluding 0,1,14,15 which are white/black/gray/white)
+            color_number = (hash_value % 12) + 2
             self.username_colors[username] = color_number
         return self.username_colors[username]
 
     async def on_ready(self):
         log_if_enabled(logging.info, ENABLE_DISCORD_LOGGING, "Discord bot logged in as %s", self.user)
+
+    async def upload_to_sourcebin(self, content, language='text'):
+        try:
+            # Clean the content by removing null bytes and normalizing line endings
+            content = content.replace('\x00', '').replace('\r\n', '\n').replace('\r', '\n')
+            
+            payload = {
+                "files": [{
+                    "name": "code.txt",
+                    "content": content,
+                    "languageId": 294  # Always use plain text because idgaf (294) 
+                }]
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    'https://sourceb.in/api/bins', 
+                    json=payload,
+                    headers={
+                        'Content-Type': 'application/json',
+                        'User-Agent': 'Discord-IRC-Bridge/1.0'
+                    }
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        return f"https://sourceb.in/{data['key']}"
+                    else:
+                        error_text = await response.text()
+                        logging.error(f"Failed to upload to sourceb.in: {response.status}, Response: {error_text}")
+                        return None
+        except Exception as e:
+            logging.error(f"Error uploading to sourceb.in: {e}")
+            return None
 
     async def on_message(self, message):
         discord_channel_id = str(message.channel.id)
@@ -289,11 +316,30 @@ class DiscordRelayBot(discord.Client):
             if any(webhook_url in webhook for webhook in self.irc_bot.channel_webhook_map.values()):
                 return
 
-        # Get the effective name - for webhooks, use author name
         author_name = message.author.display_name
-        
-        # Handle message content
         content = message.content
+
+        # Clean the content before processing
+        content = message.content.replace('\x00', '').replace('\r\n', '\n').replace('\r', '\n')
+
+        # Handle codeblocks
+        if '```' in content:
+            codeblock_pattern = r'```(?:(\w+)\n)?([\s\S]*?)```'
+            for match in re.finditer(codeblock_pattern, content):
+                language = match.group(1) or 'text'
+                code = match.group(2).strip()
+                
+                # Upload to sourceb.in
+                paste_url = await self.upload_to_sourcebin(code, language)
+                if paste_url:
+                    # Replace the codeblock with the URL
+                    content = content.replace(match.group(0), f'[Code: {paste_url}]')
+                else:
+                    # If upload fails, truncate and clean the code
+                    preview = code[:50].replace('\n', ' ') + "..." if len(code) > 50 else code.replace('\n', ' ')
+                    content = content.replace(match.group(0), f'[Code: {preview}]')
+
+        # Handle mentions
         for mention in message.mentions:
             content = content.replace(f'<@{mention.id}>', f'@{mention.display_name}')
             content = content.replace(f'<@!{mention.id}>', f'@{mention.display_name}')
@@ -303,15 +349,27 @@ class DiscordRelayBot(discord.Client):
 
         # Add attachment URLs to the message
         if message.attachments:
-            attachment_urls = [attachment.url for attachment in message.attachments]
+            attachment_urls = [f"[{att.filename}: {att.url}]" for att in message.attachments]
             if content:
                 content += " " + " ".join(attachment_urls)
             else:
                 content = " ".join(attachment_urls)
 
+        # Handle embeds (links, images, etc.)
+        if message.embeds:
+            embed_urls = [f"[{embed.type}: {embed.url}]" for embed in message.embeds if embed.url]
+            if embed_urls:
+                content += " " + " ".join(embed_urls)
+
+        # Format and send the message
         color_code = self.get_user_color(author_name)
         formatted_message = f"<\x03{color_code}{author_name}\x03> {content}"
-        log_if_enabled(logging.debug, ENABLE_DISCORD_LOGGING, "Relaying message to IRC channel %s: %s", irc_channel, formatted_message)
+        # Replace any remaining newlines with spaces
+        formatted_message = formatted_message.replace('\n', ' ').strip()
+        
+        log_if_enabled(logging.debug, ENABLE_DISCORD_LOGGING, 
+                       "Relaying message to IRC channel %s: %s", 
+                       irc_channel, formatted_message)
         self.irc_bot.connection.privmsg(irc_channel, formatted_message)
 
 
