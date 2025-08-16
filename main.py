@@ -371,30 +371,39 @@ class DiscordRelayBot(discord.Client):
         # Convert Discord emoji format <:name:id> to :name:
         content = re.sub(r'<(a)?:([a-zA-Z0-9_]+):[0-9]+>', r':\2:', content)
 
-        # Add attachment URLs to the message
+        # Collect all attachments and embeds
+        attachment_urls = []
         if message.attachments:
-            attachment_urls = [f"[{att.filename}: {att.url}]" for att in message.attachments]
-            if content:
-                content += " " + " ".join(attachment_urls)
-            else:
-                content = " ".join(attachment_urls)
-
+            attachment_urls.extend([f"[{att.filename}: {att.url}]" for att in message.attachments])
+        
         # Handle embeds (links, images, etc.)
         if message.embeds:
             embed_urls = [f"[{embed.type}: {embed.url}]" for embed in message.embeds if embed.url]
-            if embed_urls:
-                content += " " + " ".join(embed_urls)
+            attachment_urls.extend(embed_urls)
 
-        # Format and send the message
+        # Format and send the main message
         color_code = self.get_user_color(author_name)
-        formatted_message = f"<\x03{color_code}{author_name}\x03> {content}"
-        # Replace any remaining newlines with spaces
-        formatted_message = formatted_message.replace('\n', ' ').strip()
         
-        log_if_enabled(logging.debug, ENABLE_DISCORD_LOGGING, 
-                       "Relaying message to IRC channel %s: %s", 
-                       irc_channel, formatted_message)
-        self.irc_bot.connection.privmsg(irc_channel, formatted_message)
+        # Send the main content first if it exists
+        if content:
+            formatted_message = f"<\x03{color_code}{author_name}\x03> {content}"
+            formatted_message = formatted_message.replace('\n', ' ').strip()
+            
+            log_if_enabled(logging.debug, ENABLE_DISCORD_LOGGING, 
+                           "Relaying message to IRC channel %s: %s", 
+                           irc_channel, formatted_message)
+            self.irc_bot.connection.privmsg(irc_channel, formatted_message)
+        
+        # Send attachments/embeds in separate messages to avoid IRC length limits
+        # IRC typically has a 512-byte limit, so we'll be conservative and send each attachment separately
+        if attachment_urls:
+            for attachment_url in attachment_urls:
+                attachment_message = f"<\x03{color_code}{author_name}\x03> {attachment_url}"
+                
+                log_if_enabled(logging.debug, ENABLE_DISCORD_LOGGING, 
+                               "Relaying attachment to IRC channel %s: %s", 
+                               irc_channel, attachment_message)
+                self.irc_bot.connection.privmsg(irc_channel, attachment_message)
 
 
 # Initialize the IRC bot with the required parameters
