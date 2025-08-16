@@ -290,7 +290,7 @@ class DiscordRelayBot(discord.Client):
     async def on_ready(self):
         log_if_enabled(logging.info, ENABLE_DISCORD_LOGGING, "Discord bot logged in as %s", self.user)
 
-    async def upload_to_sourcebin(self, content):
+    async def upload_to_sourcebin(self, content, language='text'):
         try:
             # Clean the content by removing null bytes and normalizing line endings
             content = content.replace('\x00', '').replace('\r\n', '\n').replace('\r', '\n')
@@ -351,10 +351,11 @@ class DiscordRelayBot(discord.Client):
         if '```' in content:
             codeblock_pattern = r'```(?:(\w+)\n)?([\s\S]*?)```'
             for match in re.finditer(codeblock_pattern, content):
+                language = match.group(1) or 'text'
                 code = match.group(2).strip()
                 
                 # Upload to sourceb.in
-                paste_url = await self.upload_to_sourcebin(code)
+                paste_url = await self.upload_to_sourcebin(code, language)
                 if paste_url:
                     # Replace the codeblock with the URL
                     content = content.replace(match.group(0), f'[Code: {paste_url}]')
